@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">CamGestos TV</string>
+    <string name="a11y_desc">Permite controlar la TV (navegación, seleccionar, atrás, inicio) mediante gestos de mano captados por una cámara. La imagen se procesa solo en el dispositivo.</string>
+</resources>
