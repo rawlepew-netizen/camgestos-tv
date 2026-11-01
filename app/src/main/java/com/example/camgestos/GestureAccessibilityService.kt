@@ -2,8 +2,11 @@ package com.example.camgestos
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -12,70 +15,109 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.LinearLayout
 import android.widget.TextView
 
 enum class Dir { UP, DOWN, LEFT, RIGHT }
 
-/** Ejecuta navegación tipo control remoto, muestra avisos en pantalla y el modo standby (pantalla negra). */
+/** Ejecuta la navegación tipo control remoto y muestra avisos discretos (texto + punto verde). */
 class GestureAccessibilityService : AccessibilityService() {
 
     companion object {
         @Volatile var instance: GestureAccessibilityService? = null
+        val GREEN = 0xFF3DDC84.toInt()
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private var hudView: TextView? = null
-    private var blackView: View? = null
-    private val hideHud = Runnable { hudView?.visibility = View.GONE }
+    private var hudRoot: View? = null
+    private var hudText: TextView? = null
+    private var dbgRoot: View? = null
+    private var dbgText: TextView? = null
+
+    private val hideHud = Runnable {
+        hudRoot?.animate()?.alpha(0f)?.setDuration(220)
+            ?.withEndAction { hudRoot?.visibility = View.GONE }?.start()
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val d = resources.displayMetrics.density
         val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
 
-        blackView = View(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
-        wm.addView(blackView, WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT))
-
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        hudView = TextView(this).apply {
-            textSize = 26f; setTextColor(Color.WHITE); setBackgroundColor(Color.argb(190, 0, 0, 0))
-            setPadding(pad * 2, pad, pad * 2, pad); visibility = View.GONE
-        }
-        wm.addView(hudView, WindowManager.LayoutParams(
+        fun lp(g: Int) = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.BOTTOM or Gravity.END; x = pad * 2; y = pad * 3 })
+        ).apply { gravity = g; x = (48 * d).toInt(); y = (40 * d).toInt() }
+
+        val (hr, ht) = pill(24f)
+        hudRoot = hr; hudText = ht
+        wm.addView(hr, lp(Gravity.BOTTOM or Gravity.END))
+
+        val (dr, dt) = pill(16f)
+        dbgRoot = dr; dbgText = dt
+        wm.addView(dr, lp(Gravity.TOP or Gravity.START))
     }
 
-    override fun onUnbind(intent: android.content.Intent?): Boolean {
+    /** Aviso translúcido verde con un pequeño círculo verde de "en funcionamiento". */
+    private fun pill(size: Float): Pair<LinearLayout, TextView> {
+        val d = resources.displayMetrics.density
+        val dot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(GREEN) }
+            layoutParams = LinearLayout.LayoutParams((10 * d).toInt(), (10 * d).toInt())
+                .apply { marginEnd = (12 * d).toInt() }
+        }
+        val tv = TextView(this).apply {
+            textSize = size
+            setTextColor(Color.WHITE)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((20 * d).toInt(), (12 * d).toInt(), (22 * d).toInt(), (12 * d).toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = 30 * d
+                setColor(Color.argb(205, 12, 92, 56))
+                setStroke((1 * d).toInt().coerceAtLeast(1), Color.argb(130, 61, 220, 132))
+            }
+            visibility = View.GONE
+            addView(dot); addView(tv)
+        }
+        return root to tv
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
         instance = null
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        blackView?.let { wm.removeView(it) }
-        hudView?.let { wm.removeView(it) }
+        hudRoot?.let { runCatching { wm.removeView(it) } }
+        dbgRoot?.let { runCatching { wm.removeView(it) } }
         return super.onUnbind(intent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
-    // ---------- Interfaz visual ----------
+    // ---------- Avisos ----------
 
     fun hud(text: String) = handler.post {
-        hudView?.let {
-            it.text = text; it.visibility = View.VISIBLE
-            handler.removeCallbacks(hideHud); handler.postDelayed(hideHud, 1300)
-        }
+        val r = hudRoot ?: return@post
+        hudText?.text = text
+        handler.removeCallbacks(hideHud)
+        if (r.visibility != View.VISIBLE) { r.alpha = 0f; r.visibility = View.VISIBLE }
+        r.animate().alpha(1f).setDuration(120).start()
+        handler.postDelayed(hideHud, 1400)
     }
 
-    fun setBlack(on: Boolean) = handler.post {
-        blackView?.visibility = if (on) View.VISIBLE else View.GONE
+    fun dbg(text: String) = handler.post {
+        dbgText?.text = text
+        dbgRoot?.visibility = View.VISIBLE
     }
+
+    fun dbgOff() = handler.post { dbgRoot?.visibility = View.GONE }
 
     // ---------- Navegación tipo D-pad ----------
 
@@ -89,7 +131,6 @@ class GestureAccessibilityService : AccessibilityService() {
             })
             return
         }
-        // Android TV < 13: mover el foco con la API de accesibilidad.
         val root = rootInActiveWindow ?: return
         val cur = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         if (cur == null) { firstFocusable(root)?.performAction(AccessibilityNodeInfo.ACTION_FOCUS); return }
@@ -112,13 +153,37 @@ class GestureAccessibilityService : AccessibilityService() {
             ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY) ?: return
         var n: AccessibilityNodeInfo? = node
         val action = if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
-        while (n != null) { // sube hasta encontrar un nodo que acepte la acción
+        while (n != null) {
             if (n.performAction(action)) return
             n = n.parent
         }
     }
 
     fun global(action: Int) = performGlobalAction(action)
+
+    /** Abre el asistente de voz / buscador del sistema (Google Assistant en la mayoria de TVs). */
+    fun voice() {
+        val intents = listOf(
+            Intent(Intent.ACTION_VOICE_COMMAND),
+            Intent(Intent.ACTION_ASSIST),
+            Intent("android.intent.action.VOICE_ASSIST"),
+            Intent(android.speech.RecognizerIntent.ACTION_WEB_SEARCH)
+        )
+        for (i in intents) {
+            try {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(i)
+                return
+            } catch (e: Exception) { /* probar el siguiente */ }
+        }
+        hud("Asistente de voz no disponible")
+    }
+
+    /** Pone la TV en reposo (pantalla apagada). En Android < 9 abre el menu de apagado. */
+    fun powerOff() {
+        if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        else performGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
+    }
 
     private fun firstFocusable(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (n.isFocusable && n.isVisibleToUser) return n
