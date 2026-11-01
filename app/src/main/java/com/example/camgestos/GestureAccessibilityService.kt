@@ -35,7 +35,7 @@ class GestureAccessibilityService : AccessibilityService() {
     private var dbgText: TextView? = null
 
     private val hideHud = Runnable {
-        hudRoot?.animate()?.alpha(0f)?.setDuration(220)
+        hudRoot?.animate()?.alpha(0f)?.setDuration(260)
             ?.withEndAction { hudRoot?.visibility = View.GONE }?.start()
     }
 
@@ -57,32 +57,37 @@ class GestureAccessibilityService : AccessibilityService() {
         hudRoot = hr; hudText = ht
         wm.addView(hr, lp(Gravity.BOTTOM or Gravity.END))
 
-        val (dr, dt) = pill(16f)
+        val (dr, dt) = pill(15f)
         dbgRoot = dr; dbgText = dt
         wm.addView(dr, lp(Gravity.TOP or Gravity.START))
     }
 
-    /** Aviso translúcido verde con un pequeño círculo verde de "en funcionamiento". */
+    /** Aviso muy translúcido, verde, con un pequeño círculo verde de "en funcionamiento". */
     private fun pill(size: Float): Pair<LinearLayout, TextView> {
         val d = resources.displayMetrics.density
         val dot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(GREEN) }
-            layoutParams = LinearLayout.LayoutParams((10 * d).toInt(), (10 * d).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(GREEN)
+                setStroke((3 * d).toInt(), Color.argb(90, 61, 220, 132)) // halo
+            }
+            layoutParams = LinearLayout.LayoutParams((14 * d).toInt(), (14 * d).toInt())
                 .apply { marginEnd = (12 * d).toInt() }
         }
         val tv = TextView(this).apply {
             textSize = size
             setTextColor(Color.WHITE)
+            setShadowLayer(4f, 0f, 1f, Color.argb(170, 0, 0, 0))
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding((20 * d).toInt(), (12 * d).toInt(), (22 * d).toInt(), (12 * d).toInt())
+            setPadding((18 * d).toInt(), (11 * d).toInt(), (22 * d).toInt(), (11 * d).toInt())
             background = GradientDrawable().apply {
                 cornerRadius = 30 * d
-                setColor(Color.argb(205, 12, 92, 56))
-                setStroke((1 * d).toInt().coerceAtLeast(1), Color.argb(130, 61, 220, 132))
+                setColor(Color.argb(120, 6, 46, 30))
+                setStroke((1 * d).toInt().coerceAtLeast(1), Color.argb(90, 61, 220, 132))
             }
             visibility = View.GONE
             addView(dot); addView(tv)
@@ -107,9 +112,10 @@ class GestureAccessibilityService : AccessibilityService() {
         val r = hudRoot ?: return@post
         hudText?.text = text
         handler.removeCallbacks(hideHud)
-        if (r.visibility != View.VISIBLE) { r.alpha = 0f; r.visibility = View.VISIBLE }
-        r.animate().alpha(1f).setDuration(120).start()
-        handler.postDelayed(hideHud, 1400)
+        val d = resources.displayMetrics.density
+        if (r.visibility != View.VISIBLE) { r.alpha = 0f; r.translationY = 14 * d; r.visibility = View.VISIBLE }
+        r.animate().alpha(1f).translationY(0f).setDuration(150).start()
+        handler.postDelayed(hideHud, 1500)
     }
 
     fun dbg(text: String) = handler.post {
@@ -144,24 +150,24 @@ class GestureAccessibilityService : AccessibilityService() {
             next.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
     }
 
-    fun select(long: Boolean) {
-        if (Build.VERSION.SDK_INT >= 33 && !long) {
+    /** Tecla OK / seleccionar. */
+    fun select() {
+        if (Build.VERSION.SDK_INT >= 33) {
             performGlobalAction(GLOBAL_ACTION_DPAD_CENTER); return
         }
         val root = rootInActiveWindow ?: return
         val node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY) ?: return
         var n: AccessibilityNodeInfo? = node
-        val action = if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
         while (n != null) {
-            if (n.performAction(action)) return
+            if (n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
             n = n.parent
         }
     }
 
     fun global(action: Int) = performGlobalAction(action)
 
-    /** Abre el asistente de voz / buscador del sistema (Google Assistant en la mayoria de TVs). */
+    /** Abre el asistente de voz / buscador del sistema (Google Assistant en la mayoría de TVs). */
     fun voice() {
         val intents = listOf(
             Intent(Intent.ACTION_VOICE_COMMAND),
@@ -179,7 +185,7 @@ class GestureAccessibilityService : AccessibilityService() {
         hud("Asistente de voz no disponible")
     }
 
-    /** Pone la TV en reposo (pantalla apagada). En Android < 9 abre el menu de apagado. */
+    /** Pone la TV en reposo (pantalla apagada). En Android < 9 abre el menú de apagado. */
     fun powerOff() {
         if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
         else performGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
