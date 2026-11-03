@@ -358,7 +358,7 @@ class MainActivity : Activity() {
             })
             addView(vbox().apply {
                 addView(label("CamGestos", 30f, Color.WHITE, true))
-                addView(label("Control por gestos de mano para Android TV", 14f, MUTED))
+                addView(label("Control por gestos de mano para Android TV  ·  v${versionName()}", 14f, MUTED))
             })
             addView(View(this@MainActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
@@ -390,6 +390,9 @@ class MainActivity : Activity() {
         showTab(0)
         primaryButton.requestFocus()
     }
+
+    private fun versionName(): String =
+        try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
 
     private fun showTab(i: Int) {
         pages.forEachIndexed { idx, v -> v.visibility = if (idx == i) View.VISIBLE else View.GONE }
