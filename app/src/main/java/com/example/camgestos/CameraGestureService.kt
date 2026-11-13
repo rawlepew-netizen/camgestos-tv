@@ -65,6 +65,15 @@ class CameraGestureService : LifecycleService() {
 
     // Cámara
     @Volatile private var flipByCoords = true
+    @Volatile private var zoomLevel = 1.5f
+    @Volatile private var previewOn = true
+    @Volatile private var lastPts: FloatArray? = null
+    @Volatile private var lastText = ""
+    @Volatile private var lastResultAt = 0L
+    private var lastPreview = 0L
+    private var camFrames = 0
+    private var camFps = 0
+    private var camFpsAt = 0L
     @Volatile private var minGapMs = 50L
     private var lastAnalyzed = 0L
     private val ring = arrayOfNulls<Bitmap>(3)
@@ -86,6 +95,10 @@ class CameraGestureService : LifecycleService() {
     private var curSince = 0L
     private var lastFire = 0L
     private var lastOk = 0L
+    private var okMode = "voice"
+    private var paused = false
+    private var okLatched = false
+    private var lastToggle = 0L
 
     // Navegación
     private var ax = 0f
@@ -144,6 +157,7 @@ class CameraGestureService : LifecycleService() {
     override fun onDestroy() {
         running = false
         GestureAccessibilityService.instance?.dbgOff()
+        GestureAccessibilityService.instance?.previewOff()
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
         landmarker?.close()
         executor.shutdown()
@@ -220,11 +234,17 @@ class CameraGestureService : LifecycleService() {
                     stopSelf()
                     return@addListener
                 }
-                // Resolución pequeña = mucho menos trabajo por fotograma.
+                // Resolución elegida en Ajustes > Cámara (por defecto 640x480).
+                val target = when (prefs.getString("cam_res", "640")) {
+                    "320" -> Size(320, 240)
+                    "1280" -> Size(1280, 720)
+                    else -> Size(640, 480)
+                }
+                refreshPrefs(SystemClock.uptimeMillis())
                 val analysis = ImageAnalysis.Builder()
                     .setResolutionSelector(
                         ResolutionSelector.Builder().setResolutionStrategy(
-                            ResolutionStrategy(Size(320, 240), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+                            ResolutionStrategy(target, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                         ).build()
                     )
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -232,30 +252,49 @@ class CameraGestureService : LifecycleService() {
                     .build()
                 analysis.setAnalyzer(executor) { proxy ->
                     val now = SystemClock.uptimeMillis()
+                    // Fotogramas que entrega la cámara (antes de limitar).
+                    camFrames++
+                    if (now - camFpsAt >= 1000) { camFps = camFrames; camFrames = 0; camFpsAt = now }
+                    refreshPrefs(now)
                     // Límite de fotogramas por segundo (ajustable): menos carga = menos retraso.
                     if (now - lastAnalyzed < minGapMs) { proxy.close(); return@setAnalyzer }
                     lastAnalyzed = now
                     val rotation = proxy.imageInfo.rotationDegrees
                     val w = proxy.width
                     val h = proxy.height
+                    val frame: Bitmap
                     if (rotation == 0) {
-                        // Camino rápido: sin girar ni copiar; el espejo se aplica a las coordenadas.
+                        // Camino rápido: sin girar; el espejo se aplica a las coordenadas.
                         flipByCoords = true
                         val cached = ring[ringIdx]
-                        val bmp: Bitmap =
+                        val full: Bitmap =
                             if (cached != null && cached.width == w && cached.height == h) cached
                             else Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { ring[ringIdx] = it }
                         ringIdx = (ringIdx + 1) % ring.size
-                        proxy.use { bmp.copyPixelsFromBuffer(it.planes[0].buffer) }
-                        landmarker?.detectAsync(BitmapImageBuilder(bmp).build(), now)
+                        proxy.use { full.copyPixelsFromBuffer(it.planes[0].buffer) }
+                        frame = cropCenter(full)
                     } else {
                         // Camino de respaldo: gira y hace espejo en el bitmap.
                         flipByCoords = false
                         val src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                         proxy.use { src.copyPixelsFromBuffer(it.planes[0].buffer) }
                         val m = Matrix().apply { postRotate(rotation.toFloat()); postScale(-1f, 1f) }
-                        val out = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
-                        landmarker?.detectAsync(BitmapImageBuilder(out).build(), now)
+                        frame = cropCenter(Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true))
+                    }
+                    landmarker?.detectAsync(BitmapImageBuilder(frame).build(), now)
+
+                    // Vista previa en pantalla (imagen + esqueleto) para comprobar qué ve la cámara.
+                    if (previewOn && now - lastPreview >= 120) {
+                        lastPreview = now
+                        val ph = (240f * frame.height / frame.width).toInt().coerceAtLeast(1)
+                        val small = Bitmap.createScaledBitmap(frame, 240, ph, false)
+                        val alive = now - lastResultAt < 1500
+                        GestureAccessibilityService.instance?.preview(
+                            small,
+                            if (alive) lastPts else null,
+                            if (alive) lastText else "el modelo no responde",
+                            flipByCoords
+                        )
                     }
                 }
                 provider.unbindAll()
@@ -267,6 +306,16 @@ class CameraGestureService : LifecycleService() {
                 stopSelf()
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /** Recorta la zona central: acerca la mano cuando estás lejos de la cámara. */
+    private fun cropCenter(b: Bitmap): Bitmap {
+        val z = zoomLevel
+        if (z <= 1.02f) return b
+        val cw = (b.width / z).toInt().coerceAtLeast(64)
+        val ch = (b.height / z).toInt().coerceAtLeast(64)
+        if (cw >= b.width || ch >= b.height) return b
+        return Bitmap.createBitmap(b, (b.width - cw) / 2, (b.height - ch) / 2, cw, ch)
     }
 
     private fun pickCamera(p: ProcessCameraProvider): CameraSelector? {
@@ -288,8 +337,15 @@ class CameraGestureService : LifecycleService() {
         if (!firstResult) { firstResult = true; prefs.edit().putBoolean("gpu_trying", false).apply() }
         refreshPrefs(now)
         val flip = flipByCoords
-        var lm = res.landmarks().firstOrNull()
+        lastResultAt = now
+        val raw = res.landmarks().firstOrNull()
+        var lm = raw
         val curlV = if (lm != null) HandClassifier.curl(lm) else -1f
+        // Puntos de la mano para dibujar el esqueleto en la vista previa.
+        lastPts = if (raw != null) FloatArray(42) { i ->
+            val q = raw[i / 2]
+            if (i % 2 == 0) (if (flip) 1f - q.x() else q.x()) else q.y()
+        } else null
 
         // Mano derecha o izquierda (MediaPipe supone imagen en espejo; con imagen cruda se invierte).
         var userRight: Boolean? = null
@@ -302,7 +358,7 @@ class CameraGestureService : LifecycleService() {
         }
 
         // Calibración guiada: pausa el control normal.
-        if (calPhase != 0 || calRequested) { calibrate(curlV, now); return }
+        if (calPhase != 0 || calRequested) { lastText = "calibrando"; calibrate(curlV, now); return }
 
         // La preferencia de mano solo se aplica al activar el control.
         if (!controlling && lm != null && handPref != "any" && userRight != null &&
@@ -326,6 +382,9 @@ class CameraGestureService : LifecycleService() {
         val thr = if (cur == Hand.FIST) fistExit else fistEnter
         val g = if (lm == null) Hand.NONE else HandClassifier.classify(lm, flip, thr, backDir)
 
+        lastText = g.label() + "  |  " + (if (controlling) "control" else if (paused) "pausa" else "espera")
+        if (g != Hand.OK_SIGN) okLatched = false
+
         frames++
         if (now - fpsAt >= 1000) { fps = frames; frames = 0; fpsAt = now }
         if (debug && now - dbgAt >= 250) {
@@ -334,7 +393,7 @@ class CameraGestureService : LifecycleService() {
             val t = "%.2f".format(thr)
             val hand = when (userRight) { true -> "mano der."; false -> "mano izq."; null -> "-" }
             GestureAccessibilityService.instance?.dbg(
-                "$fps fps  |  ${g.label()}  |  curl $c / $t  |  $hand  |  ${if (controlling) "control activo" else "en espera"}"
+                "cámara $camFps fps  |  detección $fps fps  |  ${g.label()}  |  curl $c / $t  |  $hand  |  ${if (controlling) "control activo" else if (paused) "en pausa" else "en espera"}"
             )
         }
 
@@ -349,6 +408,23 @@ class CameraGestureService : LifecycleService() {
                 post { GestureAccessibilityService.instance?.apply { select(); hud("OK") } }
             }
         }
+
+        // Modo "círculo = pausar / reanudar": alterna el control sin necesidad de la mano abierta.
+        if (okMode == "pause" && !okLatched && cur == Hand.OK_SIGN && g == Hand.OK_SIGN &&
+            now - curSince >= 400 && now - lastToggle > 1000) {
+            okLatched = true
+            lastToggle = now
+            if (controlling) {
+                controlling = false; paused = true
+                cur = Hand.NONE; cand = Hand.NONE; candN = 0
+                GestureAccessibilityService.instance?.hud("Control en pausa")
+            } else if (lm != null) {
+                paused = false
+                activate(lm[9].x(), lm[9].y(), lm[0].x(), lm[0].y(), now)
+            }
+            return
+        }
+        if (paused) return
 
         if (!controlling) {
             if (cur == Hand.OPEN && g == Hand.OPEN && lm != null && now - curSince >= actMs)
@@ -452,7 +528,11 @@ class CameraGestureService : LifecycleService() {
         backDir = when (handPref) { "left" -> -1; "right" -> 1; else -> 0 }
         minGapMs = (1000f / p.getFloat("maxfps", 20f)).toLong()
         debug = p.getBoolean("debug", false)
+        zoomLevel = p.getFloat("zoom", 1.5f)
+        previewOn = p.getBoolean("preview", true)
+        okMode = p.getString("ok_mode", "voice") ?: "voice"
         if (!debug) GestureAccessibilityService.instance?.dbgOff()
+        if (!previewOn) GestureAccessibilityService.instance?.previewOff()
     }
 
     // ---------- Acciones ----------
@@ -500,7 +580,7 @@ class CameraGestureService : LifecycleService() {
             Hand.ONE_UP -> repeat(300, 1200) { mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT); svc?.hud("Canal +") }
             Hand.ONE_DOWN -> repeat(300, 1200) { mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS); svc?.hud("Canal -") }
             Hand.PINCH -> repeat(300, 1_000_000_000) { vol(AudioManager.ADJUST_TOGGLE_MUTE, "Silenciar") }
-            Hand.OK_SIGN -> repeat(400, 1_000_000_000) { svc?.hud("Comandos de voz"); svc?.voice() }
+            Hand.OK_SIGN -> if (okMode != "pause") repeat(400, 1_000_000_000) { svc?.hud("Comandos de voz"); svc?.voice() }
             Hand.THUMB_DOWN -> repeat(1500, 1_000_000_000) { svc?.hud("Apagando"); svc?.powerOff() }
             Hand.BACK -> repeat(250, 1_000_000_000) {
                 svc?.global(AccessibilityService.GLOBAL_ACTION_BACK); svc?.hud("Atrás")

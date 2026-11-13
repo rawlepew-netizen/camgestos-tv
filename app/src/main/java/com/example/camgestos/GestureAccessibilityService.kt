@@ -3,7 +3,11 @@ package com.example.camgestos
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -33,6 +37,7 @@ class GestureAccessibilityService : AccessibilityService() {
     private var hudText: TextView? = null
     private var dbgRoot: View? = null
     private var dbgText: TextView? = null
+    private var previewView: HandPreview? = null
 
     private val hideHud = Runnable {
         hudRoot?.animate()?.alpha(0f)?.setDuration(260)
@@ -60,6 +65,14 @@ class GestureAccessibilityService : AccessibilityService() {
         val (dr, dt) = pill(15f)
         dbgRoot = dr; dbgText = dt
         wm.addView(dr, lp(Gravity.TOP or Gravity.START))
+
+        val pv = HandPreview(this).apply { visibility = View.GONE }
+        previewView = pv
+        val plp = WindowManager.LayoutParams(
+            (300 * d).toInt(), (225 * d).toInt(),
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.END; x = (48 * d).toInt(); y = (40 * d).toInt() }
+        wm.addView(pv, plp)
     }
 
     /** Aviso muy translúcido, verde, con un pequeño círculo verde de "en funcionamiento". */
@@ -100,6 +113,7 @@ class GestureAccessibilityService : AccessibilityService() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         hudRoot?.let { runCatching { wm.removeView(it) } }
         dbgRoot?.let { runCatching { wm.removeView(it) } }
+        previewView?.let { runCatching { wm.removeView(it) } }
         return super.onUnbind(intent)
     }
 
@@ -124,6 +138,13 @@ class GestureAccessibilityService : AccessibilityService() {
     }
 
     fun dbgOff() = handler.post { dbgRoot?.visibility = View.GONE }
+
+    /** Muestra el fotograma de la cámara con el esqueleto de la mano (para comprobar qué ve la TV). */
+    fun preview(b: Bitmap?, p: FloatArray?, t: String, mirror: Boolean) = handler.post {
+        previewView?.let { it.visibility = View.VISIBLE; it.set(b, p, t, mirror) }
+    }
+
+    fun previewOff() = handler.post { previewView?.visibility = View.GONE }
 
     // ---------- Navegación tipo D-pad ----------
 
@@ -198,5 +219,71 @@ class GestureAccessibilityService : AccessibilityService() {
             firstFocusable(c)?.let { return it }
         }
         return null
+    }
+}
+
+/** Vista pequeña con la imagen de la cámara y el esqueleto de la mano detectada. */
+class HandPreview(ctx: Context) : View(ctx) {
+    private var bmp: Bitmap? = null
+    private var pts: FloatArray? = null
+    private var text = ""
+    private var mirror = true
+    private val dens = ctx.resources.displayMetrics.density
+    private val bg = Paint().apply { color = Color.argb(160, 0, 0, 0) }
+    private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(61, 220, 132) }
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; strokeWidth = 1.6f * dens
+    }
+    private val tx = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = 13f * dens
+        setShadowLayer(4f, 0f, 1f, Color.BLACK)
+    }
+    private val dst = RectF()
+    private val links = intArrayOf(
+        0, 1, 1, 2, 2, 3, 3, 4, 0, 5, 5, 6, 6, 7, 7, 8, 5, 9, 9, 10, 10, 11, 11, 12,
+        9, 13, 13, 14, 14, 15, 15, 16, 13, 17, 17, 18, 18, 19, 19, 20, 0, 17
+    )
+
+    fun set(b: Bitmap?, p: FloatArray?, t: String, m: Boolean) {
+        bmp = b; pts = p; text = t; mirror = m
+        invalidate()
+    }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        c.drawRect(0f, 0f, w, h, bg)
+        var left = 0f
+        var top = 0f
+        var dw = w
+        var dh = h
+        val b = bmp
+        if (b != null) {
+            val sc = minOf(w / b.width, h / b.height)
+            dw = b.width * sc
+            dh = b.height * sc
+            left = (w - dw) / 2f
+            top = (h - dh) / 2f
+            dst.set(left, top, left + dw, top + dh)
+            c.save()
+            if (mirror) c.scale(-1f, 1f, w / 2f, h / 2f)   // espejo solo de la imagen
+            c.drawBitmap(b, null, dst, null)
+            c.restore()
+        }
+        val p = pts
+        if (p != null && p.size >= 42) {
+            var k = 0
+            while (k < links.size) {
+                val a = links[k]
+                val e = links[k + 1]
+                c.drawLine(left + p[2 * a] * dw, top + p[2 * a + 1] * dh,
+                    left + p[2 * e] * dw, top + p[2 * e + 1] * dh, line)
+                k += 2
+            }
+            for (i in 0 until 21) {
+                c.drawCircle(left + p[2 * i] * dw, top + p[2 * i + 1] * dh, 2.6f * dens, dot)
+            }
+        }
+        c.drawText(text, 10f * dens, h - 10f * dens, tx)
     }
 }

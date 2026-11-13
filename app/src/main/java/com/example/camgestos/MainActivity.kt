@@ -279,7 +279,7 @@ class MainActivity : Activity() {
             }
         })
         right.addView(label(
-            "Inicia el control con esta pantalla abierta. Después puedes salir de la app y sigue funcionando en segundo plano.",
+            "Inicia el control con esta pantalla abierta. Después puedes salir de la app y sigue funcionando en segundo plano.\n\nSi no detecta tu mano, abre la pestaña Cámara: la vista previa muestra lo que ve la TV.",
             13f, MUTED
         ).apply { setPadding(0, dp(6), 0, 0) })
         return twoColumns(left, right)
@@ -304,7 +304,7 @@ class MainActivity : Activity() {
         gestureRow(right, "Un dedo arriba / abajo", "Canal + / -")
         gestureRow(right, "Pellizco", "Silenciar", last = true)
         right.addView(caption("Sistema"))
-        gestureRow(right, "Círculo, otros dedos abiertos", "Voz / Buscar")
+        gestureRow(right, "Círculo, otros dedos abiertos", "Voz o Pausa (ajustable)")
         gestureRow(right, "Pulgar abajo, 1,5 s", "Apagar", last = true)
         return twoColumns(left, right)
     }
@@ -325,21 +325,46 @@ class MainActivity : Activity() {
             12f, MUTED
         ).apply { setPadding(0, dp(8), 0, 0) })
 
-        right.addView(label("Detección y rendimiento", 22f, Color.WHITE, true))
+        right.addView(label("Gestos", 22f, Color.WHITE, true))
         slider(right, "Sensibilidad del puño", "fist_sens", 0f, 10f, 1f, 5f) { "${it.toInt()}" }
-        slider(right, "Confianza de detección (al reiniciar)", "conf", 0.30f, 0.70f, 0.05f, 0.45f) { "%.2f".format(it) }
-        slider(right, "Máximo de fotogramas por segundo", "maxfps", 10f, 30f, 5f, 20f) { "${it.toInt()}" }
-        right.addView(caption("Opciones"))
-        toggle(right, "Aceleración por GPU (experimental, al reiniciar)", "gpu", false)
-        toggle(right, "Mostrar FPS y gesto detectado", "debug", false)
-        right.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10))
-        })
+        right.addView(caption("Círculo con pulgar e índice"))
+        segmented(right, "ok_mode", "voice", listOf("voice" to "Voz / Buscar", "pause" to "Pausar / Reanudar"))
+        right.addView(label(
+            "Pausar / Reanudar apaga y enciende el control sin usar la mano abierta.",
+            12f, MUTED
+        ).apply { setPadding(0, dp(8), 0, dp(10)) })
         right.addView(button("Restablecer valores", false) {
             prefs.edit().clear().apply()
             Toast.makeText(this, "Valores restablecidos", Toast.LENGTH_SHORT).show()
             recreate()
         })
+        return twoColumns(left, right)
+    }
+
+    private fun pageCamera(): View {
+        val left = card()
+        val right = card()
+
+        left.addView(label("Imagen", 22f, Color.WHITE, true))
+        left.addView(caption("Resolución de la cámara (al reiniciar)"))
+        segmented(left, "cam_res", "640", listOf("320" to "Baja", "640" to "Media", "1280" to "Alta"))
+        slider(left, "Zoom de detección (acerca la zona central)", "zoom", 1.0f, 3.0f, 0.25f, 1.5f) { "%.2fx".format(it) }
+        slider(left, "Máximo de fotogramas por segundo", "maxfps", 10f, 30f, 5f, 20f) { "${it.toInt()}" }
+        slider(left, "Confianza de detección (al reiniciar)", "conf", 0.30f, 0.70f, 0.05f, 0.45f) { "%.2f".format(it) }
+
+        right.addView(label("Diagnóstico", 22f, Color.WHITE, true))
+        toggle(right, "Vista previa de la cámara en la pantalla", "preview", true)
+        toggle(right, "Mostrar FPS y gesto detectado", "debug", false)
+        toggle(right, "Aceleración por GPU (experimental, al reiniciar)", "gpu", false)
+        right.addView(label(
+            "La vista previa aparece arriba a la derecha de la TV y muestra la imagen de la cámara (en espejo) con el esqueleto verde de la mano.\n\n" +
+            "• Si ves la mano con el esqueleto: la detección funciona.\n" +
+            "• Si la mano se ve muy pequeña: sube el Zoom, usa Resolución Alta o acércate.\n" +
+            "• Si la imagen está oscura: más luz.\n" +
+            "• Si dice \"el modelo no responde\": reinicia el control.\n" +
+            "• Con FPS activado verás cámara y detección por separado.",
+            13f, MUTED
+        ).apply { setPadding(0, dp(10), 0, 0) })
         return twoColumns(left, right)
     }
 
@@ -349,7 +374,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.decorView.setBackgroundColor(BG)
 
-        pages.add(pageHome()); pages.add(pageGestures()); pages.add(pageCalib())
+        pages.add(pageHome()); pages.add(pageGestures()); pages.add(pageCalib()); pages.add(pageCamera())
 
         val header = hbox().apply {
             addView(View(this@MainActivity).apply {
@@ -364,7 +389,7 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
             })
         }
-        listOf("Inicio", "Gestos", "Calibración").forEachIndexed { idx, name ->
+        listOf("Inicio", "Gestos", "Calibración", "Cámara").forEachIndexed { idx, name ->
             val tv = chip(name)
             tv.layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
