@@ -95,7 +95,10 @@ class CameraGestureService : LifecycleService() {
     private var curSince = 0L
     private var lastFire = 0L
     private var lastOk = 0L
-    private var okMode = "voice"
+    private var okMode = "pause"
+    private val studio = StudioClassifier()
+    private var engine = "studio"
+    private var alwaysOn = true
     private var paused = false
     private var okLatched = false
     private var lastToggle = 0L
@@ -299,7 +302,8 @@ class CameraGestureService : LifecycleService() {
                 }
                 provider.unbindAll()
                 provider.bindToLifecycle(this, selector, analysis)
-                GestureAccessibilityService.instance?.hud("Reconocimiento listo")
+                GestureAccessibilityService.instance?.hud(
+                    if (alwaysOn) "Reconocimiento activo" else "Reconocimiento listo: abre la mano para activar")
             } catch (e: Exception) {
                 Log.e("CamGestos", "cámara: ${e.message}")
                 GestureAccessibilityService.instance?.hud("Error de cámara")
@@ -360,12 +364,15 @@ class CameraGestureService : LifecycleService() {
         // Calibración guiada: pausa el control normal.
         if (calPhase != 0 || calRequested) { lastText = "calibrando"; calibrate(curlV, now); return }
 
-        // La preferencia de mano solo se aplica al activar el control.
-        if (!controlling && lm != null && handPref != "any" && userRight != null &&
+        // Modo "siempre activo": el control está encendido desde el inicio (salvo en pausa).
+        if (alwaysOn && !paused && !controlling) { controlling = true; lastHandAt = now }
+
+        // La preferencia de mano se aplica al activar el control (o siempre en modo siempre activo).
+        if ((!controlling || alwaysOn) && lm != null && handPref != "any" && userRight != null &&
             userRight != (handPref == "right")) lm = null
 
         // Bloqueo de propietario: ignora manos que "saltan" de sitio o cambian mucho de tamaño.
-        if (lm != null && controlling) {
+        if (lm != null && controlling && !alwaysOn) {
             val cx = lm[9].x()
             val cy = lm[9].y()
             val size = hypot(lm[0].x() - lm[9].x(), lm[0].y() - lm[9].y()).coerceAtLeast(1e-3f)
@@ -377,12 +384,15 @@ class CameraGestureService : LifecycleService() {
                 ox = cx; oy = cy; osize = osize * 0.8f + size * 0.2f; lastHandAt = now
             }
         }
-        if (controlling && now - lastHandAt > relMs) release()
+        if (controlling && !alwaysOn && now - lastHandAt > relMs) release()
 
         val thr = if (cur == Hand.FIST) fistExit else fistEnter
-        val g = if (lm == null) Hand.NONE else HandClassifier.classify(lm, flip, thr, backDir)
+        val g: Hand =
+            if (lm == null) { studio.reset(); Hand.NONE }
+            else if (engine == "studio") studio.classify(lm, !paused)
+            else HandClassifier.classify(lm, flip, thr, backDir)
 
-        lastText = g.label() + "  |  " + (if (controlling) "control" else if (paused) "pausa" else "espera")
+        lastText = g.label() + "  |  " + (if (paused) "pausa" else if (controlling) "control" else "espera")
         if (g != Hand.OK_SIGN) okLatched = false
 
         frames++
@@ -530,7 +540,11 @@ class CameraGestureService : LifecycleService() {
         debug = p.getBoolean("debug", false)
         zoomLevel = p.getFloat("zoom", 1.5f)
         previewOn = p.getBoolean("preview", true)
-        okMode = p.getString("ok_mode", "voice") ?: "voice"
+        okMode = p.getString("ok_mode", "pause") ?: "pause"
+        engine = p.getString("engine", "studio") ?: "studio"
+        alwaysOn = (p.getString("mode", "always") ?: "always") == "always"
+        studio.fingerExt = p.getFloat("fext", 1.10f)
+        studio.pinchThr = p.getFloat("pinch", 0.38f)
         if (!debug) GestureAccessibilityService.instance?.dbgOff()
         if (!previewOn) GestureAccessibilityService.instance?.previewOff()
     }

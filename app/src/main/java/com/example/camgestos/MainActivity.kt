@@ -291,8 +291,8 @@ class MainActivity : Activity() {
 
         left.addView(label("Control", 22f, Color.WHITE, true))
         left.addView(caption("Activación"))
-        gestureRow(left, "Mano abierta sostenida", "Activar control")
-        gestureRow(left, "Sin mano unos segundos", "Liberar control", last = true)
+        gestureRow(left, "Círculo con pulgar e índice", "Pausar / Reanudar")
+        gestureRow(left, "Mano abierta sostenida", "Activar (modo con mano abierta)", last = true)
         left.addView(caption("Navegación"))
         gestureRow(left, "Mano abierta y empujar", "Flechas")
         gestureRow(left, "Puño cerrado", "Tecla OK")
@@ -304,7 +304,7 @@ class MainActivity : Activity() {
         gestureRow(right, "Un dedo arriba / abajo", "Canal + / -")
         gestureRow(right, "Pellizco", "Silenciar", last = true)
         right.addView(caption("Sistema"))
-        gestureRow(right, "Círculo, otros dedos abiertos", "Voz o Pausa (ajustable)")
+        gestureRow(right, "Círculo, otros dedos abiertos", "Pausar o Voz (ajustable)")
         gestureRow(right, "Pulgar abajo, 1,5 s", "Apagar", last = true)
         return twoColumns(left, right)
     }
@@ -326,11 +326,21 @@ class MainActivity : Activity() {
         ).apply { setPadding(0, dp(8), 0, 0) })
 
         right.addView(label("Gestos", 22f, Color.WHITE, true))
-        slider(right, "Sensibilidad del puño", "fist_sens", 0f, 10f, 1f, 5f) { "${it.toInt()}" }
-        right.addView(caption("Círculo con pulgar e índice"))
-        segmented(right, "ok_mode", "voice", listOf("voice" to "Voz / Buscar", "pause" to "Pausar / Reanudar"))
+        right.addView(caption("Reconocimiento"))
+        segmented(right, "engine", "studio", listOf("studio" to "AI Studio", "adv" to "Avanzado"))
+        right.addView(caption("Modo de control"))
+        segmented(right, "mode", "always", listOf("always" to "Siempre activo", "open" to "Activar con mano abierta"))
         right.addView(label(
-            "Pausar / Reanudar apaga y enciende el control sin usar la mano abierta.",
+            "Siempre activo: funciona desde que inicias el control. Con mano abierta: hay que abrir la mano 1-2 s para activar y bloquea a una sola persona.",
+            12f, MUTED
+        ).apply { setPadding(0, dp(8), 0, 0) })
+        slider(right, "Dedo extendido (AI Studio, más bajo = más fácil)", "fext", 1.00f, 1.30f, 0.02f, 1.10f) { "%.2f".format(it) }
+        slider(right, "Pellizco y círculo (AI Studio)", "pinch", 0.25f, 0.50f, 0.01f, 0.38f) { "%.2f".format(it) }
+        slider(right, "Sensibilidad del puño (modo Avanzado)", "fist_sens", 0f, 10f, 1f, 5f) { "${it.toInt()}" }
+        right.addView(caption("Círculo con pulgar e índice"))
+        segmented(right, "ok_mode", "pause", listOf("pause" to "Pausar / Reanudar", "voice" to "Voz / Buscar"))
+        right.addView(label(
+            "Pausar / Reanudar enciende y apaga el reconocimiento con el círculo (como en AI Studio).",
             12f, MUTED
         ).apply { setPadding(0, dp(8), 0, dp(10)) })
         right.addView(button("Restablecer valores", false) {
