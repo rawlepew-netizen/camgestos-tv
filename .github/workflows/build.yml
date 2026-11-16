@@ -12,6 +12,10 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: Limpiar carpetas duplicadas
+        run: |
+          rm -rf app/src/main/java/com/example/camgestos/app
+          find app/src -name "*.kts" -delete
       - name: Aceptar licencias del SDK
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4

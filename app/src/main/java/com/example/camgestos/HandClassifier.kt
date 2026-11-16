@@ -8,9 +8,12 @@ import kotlin.math.max
 enum class Hand {
     NONE, OTHER,
     OPEN, FIST, THUMB_UP, THUMB_DOWN,
-    OK_SIGN,   // círculo con pulgar e índice y el resto extendido -> voz / buscar
+    OK_SIGN,   // círculo con pulgar e índice y tres dedos arriba -> activar control
     PINCH,     // pellizco (pulgar e índice juntos, resto doblado) -> silenciar
     BACK,
+    BACKHAND,  // palma volteada (se ve el dorso de la mano) -> atrás
+    HOME,      // mano abierta de lado hacia la derecha -> inicio
+    POINT_FRONT, // índice apuntando a la cámara -> pausa / play
     ONE_UP, ONE_DOWN, TWO_UP, TWO_DOWN
 }
 

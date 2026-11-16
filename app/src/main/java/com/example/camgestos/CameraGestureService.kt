@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.media.AudioManager
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.util.Size
@@ -25,6 +26,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -98,7 +100,17 @@ class CameraGestureService : LifecycleService() {
     private var okMode = "pause"
     private val studio = StudioClassifier()
     private var engine = "studio"
-    private var alwaysOn = true
+    private var alwaysOn = false
+    private var actGesture = Hand.OK_SIGN
+    private var fingersVol1 = true
+    private var standbyReal = false
+    @Volatile private var standby = false
+    private var pinchMuted = false
+    private var ownerRight: Boolean? = null
+    private var handVotes = 0f
+    private var homeBoth = false
+    private var lastRawHandAt = 0L
+    private var cpuLock: PowerManager.WakeLock? = null
     private var paused = false
     private var okLatched = false
     private var lastToggle = 0L
@@ -161,6 +173,12 @@ class CameraGestureService : LifecycleService() {
         running = false
         GestureAccessibilityService.instance?.dbgOff()
         GestureAccessibilityService.instance?.previewOff()
+        GestureAccessibilityService.keyWake = null
+        GestureAccessibilityService.instance?.setBlack(false)
+        if (pinchMuted) runCatching {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+        }
+        cpuLock?.let { if (it.isHeld) it.release() }
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
         landmarker?.close()
         executor.shutdown()
@@ -260,7 +278,8 @@ class CameraGestureService : LifecycleService() {
                     if (now - camFpsAt >= 1000) { camFps = camFrames; camFrames = 0; camFpsAt = now }
                     refreshPrefs(now)
                     // Límite de fotogramas por segundo (ajustable): menos carga = menos retraso.
-                    if (now - lastAnalyzed < minGapMs) { proxy.close(); return@setAnalyzer }
+                    val gap = if (standby) max(minGapMs, 400L) else minGapMs
+                    if (now - lastAnalyzed < gap) { proxy.close(); return@setAnalyzer }
                     lastAnalyzed = now
                     val rotation = proxy.imageInfo.rotationDegrees
                     val w = proxy.width
@@ -287,7 +306,7 @@ class CameraGestureService : LifecycleService() {
                     landmarker?.detectAsync(BitmapImageBuilder(frame).build(), now)
 
                     // Vista previa en pantalla (imagen + esqueleto) para comprobar qué ve la cámara.
-                    if (previewOn && now - lastPreview >= 120) {
+                    if (previewOn && !standby && now - lastPreview >= 120) {
                         lastPreview = now
                         val ph = (240f * frame.height / frame.width).toInt().coerceAtLeast(1)
                         val small = Bitmap.createScaledBitmap(frame, 240, ph, false)
@@ -303,7 +322,9 @@ class CameraGestureService : LifecycleService() {
                 provider.unbindAll()
                 provider.bindToLifecycle(this, selector, analysis)
                 GestureAccessibilityService.instance?.hud(
-                    if (alwaysOn) "Reconocimiento activo" else "Reconocimiento listo: abre la mano para activar")
+                    if (alwaysOn) "Reconocimiento activo"
+                    else if (actGesture == Hand.OK_SIGN) "Listo: haz el círculo con la mano para activar"
+                    else "Listo: abre la mano para activar")
             } catch (e: Exception) {
                 Log.e("CamGestos", "cámara: ${e.message}")
                 GestureAccessibilityService.instance?.hud("Error de cámara")
@@ -351,10 +372,17 @@ class CameraGestureService : LifecycleService() {
             if (i % 2 == 0) (if (flip) 1f - q.x() else q.x()) else q.y()
         } else null
 
+        // Si la mano desaparece, se olvida la orientación de la palma (otra mano o persona).
+        if (raw != null) lastRawHandAt = now
+        else if (now - lastRawHandAt > 1500) studio.forgetPalm()
+
         // Mano derecha o izquierda (MediaPipe supone imagen en espejo; con imagen cruda se invierte).
         var userRight: Boolean? = null
+        var handScore = 0f
         if (lm != null) {
-            userRight = when (res.handedness().firstOrNull()?.firstOrNull()?.categoryName()) {
+            val cat = res.handedness().firstOrNull()?.firstOrNull()
+            handScore = cat?.score() ?: 0f
+            userRight = when (cat?.categoryName()) {
                 "Right" -> !flip
                 "Left" -> flip
                 else -> null
@@ -371,6 +399,10 @@ class CameraGestureService : LifecycleService() {
         if ((!controlling || alwaysOn) && lm != null && handPref != "any" && userRight != null &&
             userRight != (handPref == "right")) lm = null
 
+        // Con el control activado, se ignora la otra mano si MediaPipe está bastante seguro.
+        if (lm != null && controlling && !alwaysOn && ownerRight != null && userRight != null &&
+            userRight != ownerRight && handScore >= 0.85f) lm = null
+
         // Bloqueo de propietario: ignora manos que "saltan" de sitio o cambian mucho de tamaño.
         if (lm != null && controlling && !alwaysOn) {
             val cx = lm[9].x()
@@ -384,15 +416,27 @@ class CameraGestureService : LifecycleService() {
                 ox = cx; oy = cy; osize = osize * 0.8f + size * 0.2f; lastHandAt = now
             }
         }
-        if (controlling && !alwaysOn && now - lastHandAt > relMs) release()
+        if (controlling && !alwaysOn && !standby && now - lastHandAt > relMs) release()
+
+        // Home se hace "hacia afuera": derecha con la mano derecha, izquierda con la izquierda.
+        val usingRight = ownerRight ?: (handPref != "left")
+        studio.homeSide = if (homeBoth) 0 else if (usingRight) 1 else -1
 
         val thr = if (cur == Hand.FIST) fistExit else fistEnter
         val g: Hand =
             if (lm == null) { studio.reset(); Hand.NONE }
-            else if (engine == "studio") studio.classify(lm, !paused)
+            else if (engine == "studio") classifyHybrid(lm, flip, thr)
             else HandClassifier.classify(lm, flip, thr, backDir)
 
-        lastText = g.label() + "  |  " + (if (paused) "pausa" else if (controlling) "control" else "espera")
+        // Mientras haces el gesto de activación, se vota qué mano es (más fiable que un solo fotograma).
+        if (!controlling && g == actGesture && userRight != null) {
+            handVotes += if (userRight == true) handScore else -handScore
+        } else if (g != actGesture) {
+            handVotes = 0f
+        }
+
+        lastText = g.label() + "  |  " +
+            (if (standby) "standby" else if (paused) "pausa" else if (controlling) "control" else "espera")
         if (g != Hand.OK_SIGN) okLatched = false
 
         frames++
@@ -402,43 +446,57 @@ class CameraGestureService : LifecycleService() {
             val c = "%.2f".format(curlV)
             val t = "%.2f".format(thr)
             val hand = when (userRight) { true -> "mano der."; false -> "mano izq."; null -> "-" }
+            val state = if (standby) "standby" else if (controlling) "control activo" else if (paused) "en pausa" else "en espera"
             GestureAccessibilityService.instance?.dbg(
-                "cámara $camFps fps  |  detección $fps fps  |  ${g.label()}  |  curl $c / $t  |  $hand  |  ${if (controlling) "control activo" else if (paused) "en pausa" else "en espera"}"
+                "cámara $camFps fps  |  detección $fps fps  |  ${g.label()}  |  curl $c / $t  |  $hand  |  $state"
             )
         }
 
         // Estabilizador
         if (g == cand) candN++ else { cand = g; candN = 1; candSince = now }
         if (candN >= STABLE_FRAMES && cand != cur) {
+            // Al abrir los dedos del pellizco, vuelve el sonido.
+            if (cur == Hand.PINCH) unmuteIfNeeded()
             cur = cand; curSince = candSince
             lastFire = 0L; anchorSet = false; armed = true
             // Puño cerrado = tecla OK (una vez por puño, con pausa de seguridad).
-            if (controlling && cur == Hand.FIST && now - lastOk > 600) {
+            if (controlling && !standby && cur == Hand.FIST && now - lastOk > 600) {
                 lastOk = now
                 post { GestureAccessibilityService.instance?.apply { select(); hud("OK") } }
             }
         }
 
-        // Modo "círculo = pausar / reanudar": alterna el control sin necesidad de la mano abierta.
-        if (okMode == "pause" && !okLatched && cur == Hand.OK_SIGN && g == Hand.OK_SIGN &&
+        // Standby: solo el pulgar arriba (o cualquier tecla del control remoto) lo desactiva.
+        if (standby) {
+            if (cur == Hand.THUMB_UP && g == Hand.THUMB_UP && now - curSince >= 800) exitStandby()
+            return
+        }
+
+        // Modo "siempre activo": el círculo pausa / reanuda el reconocimiento.
+        if (alwaysOn && okMode == "pause" && !okLatched && cur == Hand.OK_SIGN && g == Hand.OK_SIGN &&
             now - curSince >= 400 && now - lastToggle > 1000) {
             okLatched = true
             lastToggle = now
             if (controlling) {
                 controlling = false; paused = true
+                unmuteIfNeeded()
                 cur = Hand.NONE; cand = Hand.NONE; candN = 0
                 GestureAccessibilityService.instance?.hud("Control en pausa")
             } else if (lm != null) {
                 paused = false
-                activate(lm[9].x(), lm[9].y(), lm[0].x(), lm[0].y(), now)
+                activate(lm[9].x(), lm[9].y(), lm[0].x(), lm[0].y(), now, userRight)
             }
             return
         }
         if (paused) return
 
+        // Esperando activación: el círculo (o la mano abierta) activa el control para esa mano.
         if (!controlling) {
-            if (cur == Hand.OPEN && g == Hand.OPEN && lm != null && now - curSince >= actMs)
-                activate(lm[9].x(), lm[9].y(), lm[0].x(), lm[0].y(), now)
+            if (cur == actGesture && g == actGesture && lm != null && now - curSince >= actMs) {
+                val side: Boolean? = if (abs(handVotes) >= 0.5f) handVotes > 0f else userRight
+                handVotes = 0f
+                activate(lm[9].x(), lm[9].y(), lm[0].x(), lm[0].y(), now, side)
+            }
             return
         }
         if (cur == Hand.OPEN && g == Hand.OPEN && lm != null) {
@@ -448,20 +506,84 @@ class CameraGestureService : LifecycleService() {
         onHold(cur, now)
     }
 
-    private fun activate(mx: Float, my: Float, wx: Float, wy: Float, now: Long) {
+    /**
+     * Combina los dos clasificadores: el de AI Studio para navegación, OK, pellizco, círculo, palma volteada,
+     * home y apuntar; el avanzado para los gestos de uno y dos dedos (volumen y canales), que detecta mejor.
+     */
+    private fun classifyHybrid(lm: List<NormalizedLandmark>, flip: Boolean, thr: Float): Hand {
+        val enabled = !paused && !standby
+        val s = studio.classify(lm, enabled, standby, flip)
+        if (!enabled) return s
+        val a = HandClassifier.classify(lm, flip, thr, 0)
+        val fingers = a == Hand.ONE_UP || a == Hand.ONE_DOWN || a == Hand.TWO_UP || a == Hand.TWO_DOWN
+        return if (fingers && s != Hand.OK_SIGN && s != Hand.PINCH && s != Hand.POINT_FRONT && s != Hand.HOME) a else s
+    }
+
+    private fun activate(mx: Float, my: Float, wx: Float, wy: Float, now: Long, right: Boolean?) {
         controlling = true
+        ownerRight = right
         ox = mx; oy = my
         osize = hypot(wx - mx, wy - my).coerceAtLeast(1e-3f)
         lastHandAt = now
         anchorSet = false
-        GestureAccessibilityService.instance?.hud("Control activado")
+        val side = when (right) { true -> ": mano derecha"; false -> ": mano izquierda"; null -> "" }
+        GestureAccessibilityService.instance?.hud("Control activado$side")
     }
 
     private fun release() {
         controlling = false
+        ownerRight = null
+        studio.forgetPalm()
         cur = Hand.NONE; cand = Hand.NONE; candN = 0
         anchorSet = false
+        unmuteIfNeeded()
         GestureAccessibilityService.instance?.hud("Control liberado")
+    }
+
+    // ---------- Silencio, standby ----------
+
+    private fun unmuteIfNeeded() {
+        if (!pinchMuted) return
+        pinchMuted = false
+        post {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, AudioManager.FLAG_SHOW_UI)
+            GestureAccessibilityService.instance?.hud("Sonido activado")
+        }
+    }
+
+    private fun enterStandby() {
+        if (standby) return
+        standby = true
+        unmuteIfNeeded()
+        val svc = GestureAccessibilityService.instance
+        svc?.hud("Standby")
+        svc?.previewOff()
+        svc?.setBlack(true)
+        mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+        // Red de seguridad: cualquier tecla del control remoto sale de standby.
+        GestureAccessibilityService.keyWake = { exitStandby() }
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val lock = cpuLock ?: pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "camgestos:cpu").also { cpuLock = it }
+        if (!lock.isHeld) lock.acquire(4 * 60 * 60 * 1000L)
+        if (standbyReal) svc?.powerOff()
+        cur = Hand.NONE; cand = Hand.NONE; candN = 0
+    }
+
+    @Suppress("DEPRECATION")
+    private fun exitStandby() {
+        if (!standby) return
+        standby = false
+        GestureAccessibilityService.keyWake = null
+        val svc = GestureAccessibilityService.instance
+        svc?.setBlack(false)
+        cpuLock?.let { if (it.isHeld) it.release() }
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        pm.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE, "camgestos:screen"
+        ).acquire(5000)
+        cur = Hand.NONE; cand = Hand.NONE; candN = 0
+        svc?.hud("Standby desactivado")
     }
 
     // ---------- Calibración del puño ----------
@@ -514,9 +636,12 @@ class CameraGestureService : LifecycleService() {
         Hand.FIST -> "puño"
         Hand.THUMB_UP -> "pulgar arriba"
         Hand.THUMB_DOWN -> "pulgar abajo"
-        Hand.OK_SIGN -> "círculo (voz)"
+        Hand.OK_SIGN -> "círculo"
         Hand.PINCH -> "pellizco"
         Hand.BACK -> "índice al lado"
+        Hand.BACKHAND -> "palma volteada"
+        Hand.HOME -> "mano de lado"
+        Hand.POINT_FRONT -> "índice al frente"
         Hand.ONE_UP -> "un dedo arriba"
         Hand.ONE_DOWN -> "un dedo abajo"
         Hand.TWO_UP -> "dos dedos arriba"
@@ -529,7 +654,7 @@ class CameraGestureService : LifecycleService() {
         val p = prefs
         deadZone = 0.20f - 0.008f * p.getFloat("hgain", 10f)
         fastIv = (330f - 25f * p.getFloat("speed", 6f)).toLong().coerceAtLeast(60L)
-        actMs = (p.getFloat("act_s", 1.2f) * 1000f).toLong()
+        actMs = (p.getFloat("act_s", 0.8f) * 1000f).toLong()
         relMs = (p.getFloat("rel_s", 3f) * 1000f).toLong()
         val enter = p.getFloat("fist_base", 0.70f) + (p.getFloat("fist_sens", 5f) - 5f) * 0.04f
         fistEnter = enter.coerceIn(0.45f, 1.05f)
@@ -542,7 +667,12 @@ class CameraGestureService : LifecycleService() {
         previewOn = p.getBoolean("preview", true)
         okMode = p.getString("ok_mode", "pause") ?: "pause"
         engine = p.getString("engine", "studio") ?: "studio"
-        alwaysOn = (p.getString("mode", "always") ?: "always") == "always"
+        val m = p.getString("mode", "ok") ?: "ok"
+        alwaysOn = m == "always"
+        actGesture = if (m == "open") Hand.OPEN else Hand.OK_SIGN
+        fingersVol1 = (p.getString("fingers", "vol1") ?: "vol1") == "vol1"
+        standbyReal = p.getBoolean("standby_real", false)
+        homeBoth = p.getBoolean("home_both", false)
         studio.fingerExt = p.getFloat("fext", 1.10f)
         studio.pinchThr = p.getFloat("pinch", 0.38f)
         if (!debug) GestureAccessibilityService.instance?.dbgOff()
@@ -588,16 +718,36 @@ class CameraGestureService : LifecycleService() {
             audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, AudioManager.FLAG_SHOW_UI)
             svc?.hud(label)
         }
+        fun volUp() = repeat(250, 450) { vol(AudioManager.ADJUST_RAISE, "Volumen +") }
+        fun volDown() = repeat(250, 450) { vol(AudioManager.ADJUST_LOWER, "Volumen -") }
+        fun chUp() = repeat(300, 1200) { mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT); svc?.hud("Canal +") }
+        fun chDown() = repeat(300, 1200) { mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS); svc?.hud("Canal -") }
         when (g) {
-            Hand.TWO_UP -> repeat(250, 450) { vol(AudioManager.ADJUST_RAISE, "Volumen +") }
-            Hand.TWO_DOWN -> repeat(250, 450) { vol(AudioManager.ADJUST_LOWER, "Volumen -") }
-            Hand.ONE_UP -> repeat(300, 1200) { mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT); svc?.hud("Canal +") }
-            Hand.ONE_DOWN -> repeat(300, 1200) { mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS); svc?.hud("Canal -") }
-            Hand.PINCH -> repeat(300, 1_000_000_000) { vol(AudioManager.ADJUST_TOGGLE_MUTE, "Silenciar") }
-            Hand.OK_SIGN -> if (okMode != "pause") repeat(400, 1_000_000_000) { svc?.hud("Comandos de voz"); svc?.voice() }
-            Hand.THUMB_DOWN -> repeat(1500, 1_000_000_000) { svc?.hud("Apagando"); svc?.powerOff() }
+            Hand.ONE_UP -> if (fingersVol1) volUp() else chUp()
+            Hand.ONE_DOWN -> if (fingersVol1) volDown() else chDown()
+            Hand.TWO_UP -> if (fingersVol1) chUp() else volUp()
+            Hand.TWO_DOWN -> if (fingersVol1) chDown() else volDown()
+            Hand.PINCH -> repeat(250, 1_000_000_000) {
+                if (!pinchMuted) {
+                    audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI)
+                    pinchMuted = true
+                    svc?.hud("Silenciado")
+                }
+            }
+            Hand.OK_SIGN -> if (alwaysOn && okMode == "voice")
+                repeat(400, 1_000_000_000) { svc?.hud("Comandos de voz"); svc?.voice() }
+            Hand.THUMB_DOWN -> repeat(1500, 1_000_000_000) { enterStandby() }
+            Hand.BACKHAND -> repeat(350, 1_000_000_000) {
+                svc?.global(AccessibilityService.GLOBAL_ACTION_BACK); svc?.hud("Atrás")
+            }
             Hand.BACK -> repeat(250, 1_000_000_000) {
                 svc?.global(AccessibilityService.GLOBAL_ACTION_BACK); svc?.hud("Atrás")
+            }
+            Hand.HOME -> repeat(500, 1_000_000_000) {
+                svc?.global(AccessibilityService.GLOBAL_ACTION_HOME); svc?.hud("Inicio")
+            }
+            Hand.POINT_FRONT -> repeat(350, 1_000_000_000) {
+                mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE); svc?.hud("Pausa / Reproducir")
             }
             else -> {}
         }

@@ -289,23 +289,29 @@ class MainActivity : Activity() {
         val left = card()
         val right = card()
 
-        left.addView(label("Control", 22f, Color.WHITE, true))
+        left.addView(label("Control y navegación", 22f, Color.WHITE, true))
         left.addView(caption("Activación"))
-        gestureRow(left, "Círculo con pulgar e índice", "Pausar / Reanudar")
-        gestureRow(left, "Mano abierta sostenida", "Activar (modo con mano abierta)", last = true)
+        gestureRow(left, "Círculo con pulgar e índice (3 dedos arriba)", "Activar control")
+        gestureRow(left, "Bajar la mano unos segundos", "Apagar control", last = true)
         left.addView(caption("Navegación"))
         gestureRow(left, "Mano abierta y empujar", "Flechas")
         gestureRow(left, "Puño cerrado", "Tecla OK")
-        gestureRow(left, "Índice hacia un lado", "Atrás", last = true)
+        gestureRow(left, "Voltear la palma", "Atrás")
+        gestureRow(left, "Mano de lado hacia afuera", "Inicio (Home)", last = true)
 
         right.addView(label("Multimedia y sistema", 22f, Color.WHITE, true))
         right.addView(caption("Multimedia"))
-        gestureRow(right, "Dos dedos arriba / abajo", "Volumen + / -")
-        gestureRow(right, "Un dedo arriba / abajo", "Canal + / -")
-        gestureRow(right, "Pellizco", "Silenciar", last = true)
+        gestureRow(right, "Un dedo arriba / abajo", "Volumen + / -")
+        gestureRow(right, "Dos dedos arriba / abajo", "Canal + / -")
+        gestureRow(right, "Pellizco (al abrir los dedos vuelve el sonido)", "Silenciar")
+        gestureRow(right, "Índice apuntando a la cámara", "Pausa / Play", last = true)
         right.addView(caption("Sistema"))
-        gestureRow(right, "Círculo, otros dedos abiertos", "Pausar o Voz (ajustable)")
-        gestureRow(right, "Pulgar abajo, 1,5 s", "Apagar", last = true)
+        gestureRow(right, "Pulgar abajo, 1,5 s", "Standby")
+        gestureRow(right, "Pulgar arriba, 0,8 s", "Salir de standby", last = true)
+        right.addView(label(
+            "La app detecta sola si usas la mano derecha o la izquierda al hacer el círculo. \"Inicio\" se hace con la mano hacia afuera: hacia la derecha con la derecha, hacia la izquierda con la izquierda. En standby, cualquier tecla del control remoto también lo desactiva.",
+            12f, MUTED
+        ).apply { setPadding(0, dp(10), 0, 0) })
         return twoColumns(left, right)
     }
 
@@ -313,36 +319,40 @@ class MainActivity : Activity() {
         val left = card()
         val right = card()
 
-        left.addView(label("Navegación y control", 22f, Color.WHITE, true))
-        slider(left, "Zona de movimiento (más alto = menos recorrido)", "hgain", 0f, 20f, 1f, 10f) { "${it.toInt()}" }
-        slider(left, "Velocidad máxima de las flechas", "speed", 1f, 10f, 1f, 6f) { "${it.toInt()}" }
-        slider(left, "Tiempo para activar el control", "act_s", 0.6f, 2.4f, 0.1f, 1.2f) { "%.1f s".format(it) }
-        slider(left, "Tiempo para liberar el control", "rel_s", 1.5f, 8f, 0.5f, 3f) { "%.1f s".format(it) }
+        left.addView(label("Control", 22f, Color.WHITE, true))
+        left.addView(caption("Modo de control"))
+        segmented(left, "mode", "ok", listOf("ok" to "Círculo (OK de mano)", "always" to "Siempre activo", "open" to "Mano abierta"))
+        left.addView(label(
+            "Círculo: el círculo activa el control para esa mano; al bajar la mano se apaga hasta repetirlo. Siempre activo: sin activación. Mano abierta: se activa abriendo la mano.",
+            12f, MUTED
+        ).apply { setPadding(0, dp(8), 0, 0) })
         left.addView(caption("Mano que controla"))
         segmented(left, "hand", "any", listOf("right" to "Derecha", "left" to "Izquierda", "any" to "Cualquiera"))
         left.addView(label(
-            "Con Derecha o Izquierda, solo esa mano activa el control y \"Atrás\" se hace con el índice hacia afuera. Con Cualquiera vale cualquier lado.",
+            "Cualquiera: la app detecta sola tu mano al activar. Derecha o Izquierda: solo esa mano puede activar el control.",
             12f, MUTED
         ).apply { setPadding(0, dp(8), 0, 0) })
+        slider(left, "Tiempo para activar el control", "act_s", 0.6f, 2.4f, 0.1f, 0.8f) { "%.1f s".format(it) }
+        slider(left, "Tiempo para apagar al bajar la mano", "rel_s", 1.5f, 8f, 0.5f, 3f) { "%.1f s".format(it) }
+        slider(left, "Zona de movimiento (más alto = menos recorrido)", "hgain", 0f, 20f, 1f, 10f) { "${it.toInt()}" }
+        slider(left, "Velocidad máxima de las flechas", "speed", 1f, 10f, 1f, 6f) { "${it.toInt()}" }
 
         right.addView(label("Gestos", 22f, Color.WHITE, true))
+        right.addView(caption("Volumen y canal"))
+        segmented(right, "fingers", "vol1", listOf("vol1" to "1 dedo = volumen", "vol2" to "2 dedos = volumen"))
+        slider(right, "Dedo extendido (más bajo = más fácil)", "fext", 1.00f, 1.30f, 0.02f, 1.10f) { "%.2f".format(it) }
+        slider(right, "Pellizco y círculo (más alto = más fácil)", "pinch", 0.25f, 0.50f, 0.01f, 0.38f) { "%.2f".format(it) }
         right.addView(caption("Reconocimiento"))
-        segmented(right, "engine", "studio", listOf("studio" to "AI Studio", "adv" to "Avanzado"))
-        right.addView(caption("Modo de control"))
-        segmented(right, "mode", "always", listOf("always" to "Siempre activo", "open" to "Activar con mano abierta"))
-        right.addView(label(
-            "Siempre activo: funciona desde que inicias el control. Con mano abierta: hay que abrir la mano 1-2 s para activar y bloquea a una sola persona.",
-            12f, MUTED
-        ).apply { setPadding(0, dp(8), 0, 0) })
-        slider(right, "Dedo extendido (AI Studio, más bajo = más fácil)", "fext", 1.00f, 1.30f, 0.02f, 1.10f) { "%.2f".format(it) }
-        slider(right, "Pellizco y círculo (AI Studio)", "pinch", 0.25f, 0.50f, 0.01f, 0.38f) { "%.2f".format(it) }
+        segmented(right, "engine", "studio", listOf("studio" to "AI Studio + dedos", "adv" to "Avanzado"))
         slider(right, "Sensibilidad del puño (modo Avanzado)", "fist_sens", 0f, 10f, 1f, 5f) { "${it.toInt()}" }
-        right.addView(caption("Círculo con pulgar e índice"))
+        right.addView(caption("Opciones"))
+        toggle(right, "Inicio también con la mano hacia el otro lado", "home_both", false)
+        toggle(right, "Standby: apagar la pantalla de verdad (experimental)", "standby_real", false)
+        right.addView(caption("Círculo en modo Siempre activo"))
         segmented(right, "ok_mode", "pause", listOf("pause" to "Pausar / Reanudar", "voice" to "Voz / Buscar"))
-        right.addView(label(
-            "Pausar / Reanudar enciende y apaga el reconocimiento con el círculo (como en AI Studio).",
-            12f, MUTED
-        ).apply { setPadding(0, dp(8), 0, dp(10)) })
+        right.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
+        })
         right.addView(button("Restablecer valores", false) {
             prefs.edit().clear().apply()
             Toast.makeText(this, "Valores restablecidos", Toast.LENGTH_SHORT).show()

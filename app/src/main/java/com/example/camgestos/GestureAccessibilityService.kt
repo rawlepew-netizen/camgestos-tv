@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -30,6 +31,8 @@ class GestureAccessibilityService : AccessibilityService() {
     companion object {
         @Volatile var instance: GestureAccessibilityService? = null
         val GREEN = 0xFF3DDC84.toInt()
+        /** Mientras haya standby, cualquier tecla del control remoto llama a esta función para salir. */
+        @Volatile var keyWake: (() -> Unit)? = null
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -38,6 +41,7 @@ class GestureAccessibilityService : AccessibilityService() {
     private var dbgRoot: View? = null
     private var dbgText: TextView? = null
     private var previewView: HandPreview? = null
+    private var blackView: View? = null
 
     private val hideHud = Runnable {
         hudRoot?.animate()?.alpha(0f)?.setDuration(260)
@@ -57,6 +61,14 @@ class GestureAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT
         ).apply { gravity = g; x = (48 * d).toInt(); y = (40 * d).toInt() }
+
+        val bv = View(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
+        blackView = bv
+        wm.addView(bv, WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            flags or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT
+        ))
 
         val (hr, ht) = pill(24f)
         hudRoot = hr; hudText = ht
@@ -114,7 +126,15 @@ class GestureAccessibilityService : AccessibilityService() {
         hudRoot?.let { runCatching { wm.removeView(it) } }
         dbgRoot?.let { runCatching { wm.removeView(it) } }
         previewView?.let { runCatching { wm.removeView(it) } }
+        blackView?.let { runCatching { wm.removeView(it) } }
         return super.onUnbind(intent)
+    }
+
+    /** En standby cualquier tecla del control remoto lo desactiva (y no llega a la app que está debajo). */
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        val w = keyWake ?: return false
+        if (event.action == KeyEvent.ACTION_DOWN) handler.post { w() }
+        return true
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -145,6 +165,9 @@ class GestureAccessibilityService : AccessibilityService() {
     }
 
     fun previewOff() = handler.post { previewView?.visibility = View.GONE }
+
+    /** Pantalla negra del modo standby. */
+    fun setBlack(on: Boolean) = handler.post { blackView?.visibility = if (on) View.VISIBLE else View.GONE }
 
     // ---------- Navegación tipo D-pad ----------
 
